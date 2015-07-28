@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"goutils/slackconnect"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/godbus/dbus"
 )
@@ -30,13 +33,32 @@ type serviceStatus struct {
 	InactiveExitTimestamp  uint64
 }
 
+func formatTime(us uint64) string {
+	return time.Unix(0, 1000*int64(us)).Format(time.RFC1123Z)
+}
+
+func (s serviceStatus) String() string {
+	var buf bytes.Buffer
+
+	buf.WriteString(fmt.Sprintf("ID: %s\n", s.ID))
+	buf.WriteString(fmt.Sprintf("Name: %s\n", s.Name))
+	buf.WriteString(fmt.Sprintf("State: %s\n", s.ActiveState))
+	buf.WriteString(fmt.Sprintf("ActiveEnterTime: %s\n", formatTime(s.ActiveEnterTimestamp)))
+	buf.WriteString(fmt.Sprintf("ActiveExitTime: %s\n", formatTime(s.ActiveExitTimestamp)))
+	buf.WriteString(fmt.Sprintf("InactiveEnterTime: %s\n", formatTime(s.InactiveEnterTimestamp)))
+	buf.WriteString(fmt.Sprintf("InactiveExitTime: %s\n", formatTime(s.InactiveExitTimestamp)))
+
+	return buf.String()
+}
+
 type unitMonitor struct {
 	name    string
 	done    chan struct{}
+	path    dbus.ObjectPath
 	chanPub chan serviceStatus
 }
 
-func (m *unitMonitor) path() dbus.ObjectPath {
+func (m *unitMonitor) getUnitPath() dbus.ObjectPath {
 
 	var ret dbus.ObjectPath
 
@@ -70,7 +92,7 @@ func (m *unitMonitor) getProp(name string) dbus.Variant {
 		return ret
 	}
 
-	err = c.Object("org.freedesktop.systemd1", m.path()).Call(
+	err = c.Object("org.freedesktop.systemd1", m.path).Call(
 		propGet,
 		0,
 		"org.freedesktop.systemd1.Unit",
@@ -78,7 +100,7 @@ func (m *unitMonitor) getProp(name string) dbus.Variant {
 	).Store(&ret)
 
 	if err != nil {
-		panic(err)
+		log.Println(err)
 	}
 	return ret
 }
@@ -86,7 +108,8 @@ func (m *unitMonitor) getProp(name string) dbus.Variant {
 func (m *unitMonitor) generateStatus() serviceStatus {
 	status := serviceStatus{
 		ID:   getLocalIP(),
-		Path: m.path(),
+		Name: m.name,
+		Path: m.path,
 	}
 
 	var prop dbus.Variant
@@ -125,8 +148,10 @@ func (m *unitMonitor) watch() error {
 		return err
 	}
 
+	m.path = m.getUnitPath()
+
 	// subscribe the props changes signal
-	props := fmt.Sprintf("type='signal',path_namespace='%s',interface='org.freedesktop.DBus.Properties'", m.path())
+	props := fmt.Sprintf("type='signal',path='%s',interface='org.freedesktop.DBus.Properties'", m.path)
 	call := conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, props)
 	if call != nil && call.Err != nil {
 		return call.Err
@@ -142,14 +167,27 @@ func (m *unitMonitor) watch() error {
 
 	conn.Signal(signal)
 
-	log.Printf("watching for %s @%s\n", m.name, m.path())
+	log.Printf("watching for %s @%s\n", m.name, m.path)
 
 	for {
 		select {
 		case ev := <-signal:
 			switch ev.Name {
 			case propertiesChanged:
-				m.chanPub <- m.generateStatus()
+				var iName string
+				var changedProps map[string]dbus.Variant
+				var invProps []string
+
+				if ev.Path == m.path {
+					if err := dbus.Store(ev.Body, &iName, &changedProps, &invProps); err != nil {
+						log.Println(err.Error())
+						continue
+					}
+
+					if iName == "org.freedesktop.systemd1.Unit" {
+						m.chanPub <- m.generateStatus()
+					}
+				}
 			}
 
 		case <-m.done:
@@ -193,46 +231,58 @@ func watchServices(chanDone chan struct{}, units ...string) {
 
 	for _, unit := range units {
 		go func(u string) {
-			err := (&unitMonitor{
+			m := &unitMonitor{
 				done:    chanDone,
 				name:    u,
 				chanPub: chanPub,
-			}).watch()
-			if err != nil {
+			}
+
+			if err := m.watch(); err != nil {
 				log.Println(u, err)
 			}
+
 		}(unit)
 	}
 
 	for {
 		select {
 		case status := <-chanPub:
-			log.Println(status)
+			// TODO: this is my personal implementation only. Please modify to suit your needs
+			slackLogger.Info(status.String())
+
 		case <-chanDone:
 			return
 		}
 	}
 }
 
+var (
+	slackLogger slackconnect.Logger
+)
+
 func main() {
+	slackLogger = slackconnect.NewLogger("systemd.db", "#systemd", "MSA-BOT")
 	done := make(chan struct{})
 	defer close(done)
+	defer slackLogger.Close()
 
 	// sample services
-	services := []string{"docker.service", "redis.service"}
+	units := []string{"redis.service", "docker.service"}
 
 	ose := os.Getenv(envServices)
 	if ose != "" {
-		services = []string{}
+		units = []string{}
 		for _, s := range strings.Split(ose, ",") {
-			services = append(services, strings.TrimSpace(s))
+			units = append(units, strings.TrimSpace(s))
 		}
 	}
 
-	if len(services) == 0 {
+	if len(units) == 0 {
 		os.Exit(-1)
 	}
 
-	go watchServices(done, services...)
+	slackLogger.Open()
+
+	go watchServices(done, units...)
 	waitForOsSignal()
 }
