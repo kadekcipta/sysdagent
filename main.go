@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	envServices = "X_SYSD_SERVICES"
+	envServices   = "X_SYSD_SERVICES"
+	envWebhookUri = "X_SYSD_WEBHOOK_URI"
 
 	propertiesChanged = "org.freedesktop.DBus.Properties.PropertiesChanged"
 	propGet           = "org.freedesktop.DBus.Properties.Get"
@@ -261,7 +262,13 @@ var (
 )
 
 func main() {
-	slackLogger = slackconnect.NewLogger("systemd.db", "#systemd", "MSA-BOT")
+	webhookUri := os.Getenv(envWebhookUri)
+	if webhookUri == "" {
+		fmt.Fprintf(os.Stderr, "Please set %s to your valid slack webhook uri\n", envWebhookUri)
+		os.Exit(-1)
+	}
+
+	slackLogger = slackconnect.NewLogger(webhookUri, "systemd.db", "#systemd", "MSA-BOT", nil)
 	done := make(chan struct{})
 	defer close(done)
 	defer slackLogger.Close()
