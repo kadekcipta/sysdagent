@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"goutils/slackconnect"
+	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -44,10 +45,10 @@ func (s serviceStatus) String() string {
 	buf.WriteString(fmt.Sprintf("ID: %s\n", s.ID))
 	buf.WriteString(fmt.Sprintf("Name: %s\n", s.Name))
 	buf.WriteString(fmt.Sprintf("State: %s\n", s.ActiveState))
-	buf.WriteString(fmt.Sprintf("ActiveEnterTime: %s\n", formatTime(s.ActiveEnterTimestamp)))
-	buf.WriteString(fmt.Sprintf("ActiveExitTime: %s\n", formatTime(s.ActiveExitTimestamp)))
-	buf.WriteString(fmt.Sprintf("InactiveEnterTime: %s\n", formatTime(s.InactiveEnterTimestamp)))
-	buf.WriteString(fmt.Sprintf("InactiveExitTime: %s\n", formatTime(s.InactiveExitTimestamp)))
+	//buf.WriteString(fmt.Sprintf("ActiveEnterTime: %s\n", formatTime(s.ActiveEnterTimestamp)))
+	//buf.WriteString(fmt.Sprintf("ActiveExitTime: %s\n", formatTime(s.ActiveExitTimestamp)))
+	//buf.WriteString(fmt.Sprintf("InactiveEnterTime: %s\n", formatTime(s.InactiveEnterTimestamp)))
+	//buf.WriteString(fmt.Sprintf("InactiveExitTime: %s\n", formatTime(s.InactiveExitTimestamp)))
 
 	return buf.String()
 }
@@ -182,6 +183,7 @@ func (m *unitMonitor) watch() error {
 				if ev.Path == m.path {
 					if err := dbus.Store(ev.Body, &iName, &changedProps, &invProps); err != nil {
 						log.Println(err.Error())
+						log.Println("aku dead")
 						continue
 					}
 
@@ -203,7 +205,6 @@ func (m *unitMonitor) watch() error {
 func waitForOsSignal() {
 	signals := []os.Signal{syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM, syscall.SIGSTOP}
 	signalSink := make(chan os.Signal, 1)
-
 	defer close(signalSink)
 
 	signal.Notify(signalSink, signals...)
@@ -249,8 +250,13 @@ func watchServices(chanDone chan struct{}, units ...string) {
 		select {
 		case status := <-chanPub:
 			// TODO: this is my personal implementation only. Please modify to suit your needs
-			slackLogger.Info(status.String())
-
+			contents, _ := ioutil.ReadFile("filename.txt")
+			println(string(contents))
+			ioutil.WriteFile("filename.txt", []byte(status.ActiveState), 0644)
+			if status.ActiveState != string(contents) {
+				slackLogger.Info(status.String())
+				log.Println("aku hore")
+			}
 		case <-chanDone:
 			return
 		}
@@ -268,13 +274,13 @@ func main() {
 		os.Exit(-1)
 	}
 
-	slackLogger = slackconnect.NewLogger(webhookUri, "systemd.db", "#systemd", "MSA-BOT", nil)
+	slackLogger = slackconnect.NewLogger(webhookUri, "systemd.db", "#only_for_testing", "MSA-BOT", nil)
 	done := make(chan struct{})
 	defer close(done)
 	defer slackLogger.Close()
 
 	// sample services
-	units := []string{"redis.service", "docker.service"}
+	units := []string{"httpd.service"}
 
 	ose := os.Getenv(envServices)
 	if ose != "" {
