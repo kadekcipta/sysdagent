@@ -18,7 +18,9 @@ import (
 
 const (
 	envServices   = "X_SYSD_SERVICES"
-	envWebhookUri = "X_SYSD_WEBHOOK_URI"
+	envWebhookURI = "X_SYSD_WEBHOOK_URI"
+	targetHook    = "X_TARGET_HOOK"
+	messengerName = "X_MESSENGER_NAME"
 
 	propertiesChanged = "org.freedesktop.DBus.Properties.PropertiesChanged"
 	propGet           = "org.freedesktop.DBus.Properties.Get"
@@ -199,7 +201,6 @@ func (m *unitMonitor) watch() error {
 		}
 	}
 
-	return nil
 }
 
 func waitForOsSignal() {
@@ -255,7 +256,7 @@ func watchServices(chanDone chan struct{}, units ...string) {
 			ioutil.WriteFile("filename.txt", []byte(status.ActiveState), 0644)
 			if status.ActiveState != string(contents) {
 				slackLogger.Info(status.String())
-				log.Println("aku hore")
+				log.Println("slack sent")
 			}
 		case <-chanDone:
 			return
@@ -268,19 +269,21 @@ var (
 )
 
 func main() {
-	webhookUri := os.Getenv(envWebhookUri)
-	if webhookUri == "" {
-		fmt.Fprintf(os.Stderr, "Please set %s to your valid slack webhook uri\n", envWebhookUri)
+	webhookURI := os.Getenv(envWebhookURI)
+	target := os.Getenv(targetHook)
+	messenger := os.Getenv(messengerName)
+	if webhookURI == "" {
+		fmt.Fprintf(os.Stderr, "Please set %s to your valid slack webhook uri\n", envWebhookURI)
 		os.Exit(-1)
 	}
 
-	slackLogger = slackconnect.NewLogger(webhookUri, "systemd.db", "#only_for_testing", "MSA-BOT", nil)
+	slackLogger = slackconnect.NewLogger(webhookURI, "systemd.db", target, messenger, nil)
 	done := make(chan struct{})
 	defer close(done)
 	defer slackLogger.Close()
 
 	// sample services
-	units := []string{"httpd.service"}
+	units := []string{"teamviewerd.service", "php-fpm.service"}
 
 	ose := os.Getenv(envServices)
 	if ose != "" {
