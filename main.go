@@ -3,10 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"goutils/slackconnect"
 	"io/ioutil"
 	"log"
 	"net"
+	"net/smtp"
 	"os"
 	"os/signal"
 	"strings"
@@ -17,10 +17,7 @@ import (
 )
 
 const (
-	envServices   = "X_SYSD_SERVICES"
-	envWebhookURI = "X_SYSD_WEBHOOK_URI"
-	targetHook    = "X_TARGET_HOOK"
-	messengerName = "X_MESSENGER_NAME"
+	envServices = "crond.service, nginx.service"
 
 	propertiesChanged = "org.freedesktop.DBus.Properties.PropertiesChanged"
 	propGet           = "org.freedesktop.DBus.Properties.Get"
@@ -44,7 +41,7 @@ func formatTime(us uint64) string {
 func (s serviceStatus) String() string {
 	var buf bytes.Buffer
 
-	buf.WriteString(fmt.Sprintf("ID: %s\n", s.ID))
+	buf.WriteString(fmt.Sprintf("IP: %s\n", s.ID))
 	buf.WriteString(fmt.Sprintf("Name: %s\n", s.Name))
 	buf.WriteString(fmt.Sprintf("State: %s\n", s.ActiveState))
 	//buf.WriteString(fmt.Sprintf("ActiveEnterTime: %s\n", formatTime(s.ActiveEnterTimestamp)))
@@ -185,7 +182,6 @@ func (m *unitMonitor) watch() error {
 				if ev.Path == m.path {
 					if err := dbus.Store(ev.Body, &iName, &changedProps, &invProps); err != nil {
 						log.Println(err.Error())
-						log.Println("aku dead")
 						continue
 					}
 
@@ -252,11 +248,10 @@ func watchServices(chanDone chan struct{}, units ...string) {
 		case status := <-chanPub:
 			// TODO: this is my personal implementation only. Please modify to suit your needs
 			contents, _ := ioutil.ReadFile("filename.txt")
-			println(string(contents))
 			ioutil.WriteFile("filename.txt", []byte(status.ActiveState), 0644)
 			if status.ActiveState != string(contents) {
-				slackLogger.Info(status.String())
-				log.Println("slack sent")
+				log.Println(status.String())
+				sendEmail(status.String())
 			}
 		case <-chanDone:
 			return
@@ -264,28 +259,34 @@ func watchServices(chanDone chan struct{}, units ...string) {
 	}
 }
 
-var (
-	slackLogger slackconnect.Logger
-)
+func sendEmail(body string) {
+	from := "*****@gmail.com"
+	pass := "***"
+	to := "******"
+
+	msg := "From: " + from + "\n" +
+		"To: " + to + "\n" +
+		"Subject: Hello there\n\n" +
+		body
+
+	err := smtp.SendMail("smtp.gmail.com:587",
+		smtp.PlainAuth("", from, pass, "smtp.gmail.com"),
+		from, []string{to}, []byte(msg))
+
+	if err != nil {
+		log.Printf("smtp error: %s", err)
+		return
+	}
+}
 
 func main() {
-	webhookURI := os.Getenv(envWebhookURI)
-	target := os.Getenv(targetHook)
-	messenger := os.Getenv(messengerName)
-	if webhookURI == "" {
-		fmt.Fprintf(os.Stderr, "Please set %s to your valid slack webhook uri\n", envWebhookURI)
-		os.Exit(-1)
-	}
-
-	slackLogger = slackconnect.NewLogger(webhookURI, "systemd.db", target, messenger, nil)
 	done := make(chan struct{})
 	defer close(done)
-	defer slackLogger.Close()
 
 	// sample services
-	units := []string{"teamviewerd.service", "php-fpm.service"}
+	units := []string{"teamviewerd.service"}
 
-	ose := os.Getenv(envServices)
+	ose := envServices
 	if ose != "" {
 		units = []string{}
 		for _, s := range strings.Split(ose, ",") {
@@ -296,8 +297,6 @@ func main() {
 	if len(units) == 0 {
 		os.Exit(-1)
 	}
-
-	slackLogger.Open()
 
 	go watchServices(done, units...)
 	waitForOsSignal()
