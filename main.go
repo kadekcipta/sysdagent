@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"goutils/slackconnect"
-	"log"
+	"io/ioutil"
 	"net"
+	"net/smtp"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/godbus/dbus"
+	"github.com/spf13/viper"
+
+	"github.com/srajelli/ses-go"
 )
 
 const (
-	envServices   = "X_SYSD_SERVICES"
-	envWebhookUri = "X_SYSD_WEBHOOK_URI"
+	envServices = "crond.service, nginx.service"
 
 	propertiesChanged = "org.freedesktop.DBus.Properties.PropertiesChanged"
 	propGet           = "org.freedesktop.DBus.Properties.Get"
@@ -41,13 +43,19 @@ func formatTime(us uint64) string {
 func (s serviceStatus) String() string {
 	var buf bytes.Buffer
 
-	buf.WriteString(fmt.Sprintf("ID: %s\n", s.ID))
-	buf.WriteString(fmt.Sprintf("Name: %s\n", s.Name))
+	hostname, err := os.Hostname()
+	if err != nil {
+		panic(err)
+	}
+
+	buf.WriteString(fmt.Sprintf("IP: %s\n", s.ID))
+	buf.WriteString(fmt.Sprintf("Hostname: %s\n", hostname))
+	buf.WriteString(fmt.Sprintf("Service Name: %s\n", s.Name))
 	buf.WriteString(fmt.Sprintf("State: %s\n", s.ActiveState))
-	buf.WriteString(fmt.Sprintf("ActiveEnterTime: %s\n", formatTime(s.ActiveEnterTimestamp)))
-	buf.WriteString(fmt.Sprintf("ActiveExitTime: %s\n", formatTime(s.ActiveExitTimestamp)))
-	buf.WriteString(fmt.Sprintf("InactiveEnterTime: %s\n", formatTime(s.InactiveEnterTimestamp)))
-	buf.WriteString(fmt.Sprintf("InactiveExitTime: %s\n", formatTime(s.InactiveExitTimestamp)))
+	//buf.WriteString(fmt.Sprintf("ActiveEnterTime: %s\n", formatTime(s.ActiveEnterTimestamp)))
+	//buf.WriteString(fmt.Sprintf("ActiveExitTime: %s\n", formatTime(s.ActiveExitTimestamp)))
+	//buf.WriteString(fmt.Sprintf("InactiveEnterTime: %s\n", formatTime(s.InactiveEnterTimestamp)))
+	//buf.WriteString(fmt.Sprintf("InactiveExitTime: %s\n", formatTime(s.InactiveExitTimestamp)))
 
 	return buf.String()
 }
@@ -71,12 +79,12 @@ func (m *unitMonitor) getUnitPath() dbus.ObjectPath {
 	obj := c.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
 	call := obj.Call("org.freedesktop.systemd1.Manager.GetUnit", 0, m.name)
 	if call != nil && call.Err != nil {
-		log.Println(err)
+		fmt.Println(err)
 		return ret
 	}
 
 	if err := call.Store(&ret); err != nil {
-		log.Println(err)
+		fmt.Println(err)
 		return ret
 	}
 
@@ -89,7 +97,7 @@ func (m *unitMonitor) getProp(name string) dbus.Variant {
 
 	c, err := dbus.SystemBus()
 	if err != nil {
-		log.Println(err)
+		fmt.Println(err)
 		return ret
 	}
 
@@ -101,7 +109,7 @@ func (m *unitMonitor) getProp(name string) dbus.Variant {
 	).Store(&ret)
 
 	if err != nil {
-		log.Println(err)
+		fmt.Println(err)
 	}
 	return ret
 }
@@ -168,7 +176,7 @@ func (m *unitMonitor) watch() error {
 
 	conn.Signal(signal)
 
-	log.Printf("watching for %s @%s\n", m.name, m.path)
+	fmt.Printf("watching for %s @%s\n", m.name, m.path)
 
 	for {
 		select {
@@ -181,7 +189,7 @@ func (m *unitMonitor) watch() error {
 
 				if ev.Path == m.path {
 					if err := dbus.Store(ev.Body, &iName, &changedProps, &invProps); err != nil {
-						log.Println(err.Error())
+						fmt.Println(err.Error())
 						continue
 					}
 
@@ -197,13 +205,11 @@ func (m *unitMonitor) watch() error {
 		}
 	}
 
-	return nil
 }
 
 func waitForOsSignal() {
 	signals := []os.Signal{syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM, syscall.SIGSTOP}
 	signalSink := make(chan os.Signal, 1)
-
 	defer close(signalSink)
 
 	signal.Notify(signalSink, signals...)
@@ -239,7 +245,7 @@ func watchServices(chanDone chan struct{}, units ...string) {
 			}
 
 			if err := m.watch(); err != nil {
-				log.Println(u, err)
+				fmt.Println(u, err)
 			}
 
 		}(unit)
@@ -249,34 +255,90 @@ func watchServices(chanDone chan struct{}, units ...string) {
 		select {
 		case status := <-chanPub:
 			// TODO: this is my personal implementation only. Please modify to suit your needs
-			slackLogger.Info(status.String())
-
+			contents, _ := ioutil.ReadFile("filename.txt")
+			ioutil.WriteFile("filename.txt", []byte(status.ActiveState), 0644)
+			if status.ActiveState != string(contents) {
+				fmt.Println(status.String())
+				if viper.GetBool("app.smtp.ses.enabled") == true {
+					//sesAws(status.String())
+					to := viper.Get("app.smtp.recipient").(string)
+					dest := strings.Split(to, ", ")
+					start := 0
+					for i := 0; i < len(dest); i++ {
+						start += i
+						sesAws(dest[start], status.String())
+					}
+				} else {
+					sendEmail(status.String())
+				}
+			}
 		case <-chanDone:
 			return
 		}
 	}
 }
 
-var (
-	slackLogger slackconnect.Logger
-)
+func sendEmail(body string) {
+	from := viper.Get("app.smtp.user").(string)
+	pass := viper.Get("app.smtp.password").(string)
+	port := viper.Get("app.smtp.port").(string)
+	server := viper.Get("app.smtp.server").(string)
+	to := viper.Get("app.smtp.recipient").(string)
+	subject := viper.Get("app.smtp.subject").(string)
 
-func main() {
-	webhookUri := os.Getenv(envWebhookUri)
-	if webhookUri == "" {
-		fmt.Fprintf(os.Stderr, "Please set %s to your valid slack webhook uri\n", envWebhookUri)
-		os.Exit(-1)
+	msg := "From: " + from + "\n" +
+		"To: " + to + "\n" +
+		"Subject: " + subject + "\n\n" +
+		body
+
+	err := smtp.SendMail(server+":"+port,
+		smtp.PlainAuth("", from, pass, server),
+		from, strings.Split(to, ", "), []byte(msg))
+
+	if err != nil {
+		fmt.Printf("smtp error: %s", err)
+		return
+	}
+}
+
+func sesAws(to string, body string) {
+	from := viper.Get("app.smtp.user").(string)
+	subject := viper.Get("app.smtp.subject").(string)
+	awsKeyID := viper.Get("app.smtp.ses.aws-key-id").(string)
+	awsSecretKey := viper.Get("app.smtp.ses.aws-secret-key").(string)
+	awsRegion := viper.Get("app.smtp.ses.aws-region").(string)
+
+	ses.SetConfiguration(awsKeyID, awsSecretKey, awsRegion)
+
+	emailData := ses.Email{
+		To:      to,
+		From:    from,
+		Text:    body,
+		Subject: subject,
+		ReplyTo: from,
 	}
 
-	slackLogger = slackconnect.NewLogger(webhookUri, "systemd.db", "#systemd", "MSA-BOT", nil)
+	resp := ses.SendEmail(emailData)
+
+	fmt.Println(resp)
+}
+
+func main() {
 	done := make(chan struct{})
 	defer close(done)
-	defer slackLogger.Close()
+
+	// config
+	viper.SetConfigName("config")
+	viper.AddConfigPath(".")
+	err := viper.ReadInConfig()
+	if err != nil {
+		panic(fmt.Errorf("fatal error config file: %s", err))
+	}
 
 	// sample services
-	units := []string{"redis.service", "docker.service"}
+	units := []string{"teamviewerd.service"}
 
-	ose := os.Getenv(envServices)
+	ose := viper.Get("app.monitored-service").(string)
 	if ose != "" {
 		units = []string{}
 		for _, s := range strings.Split(ose, ",") {
@@ -287,8 +349,6 @@ func main() {
 	if len(units) == 0 {
 		os.Exit(-1)
 	}
-
-	slackLogger.Open()
 
 	go watchServices(done, units...)
 	waitForOsSignal()
