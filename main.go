@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -266,17 +267,20 @@ func watchServices(chanDone chan struct{}, units ...string) {
 }
 
 func sendEmail(body string) {
-	from := "*****@gmail.com"
-	pass := "*****"
-	to := "*******"
+	from := viper.Get("app.smtp.user").(string)
+	pass := viper.Get("app.smtp.password").(string)
+	port := viper.Get("app.smtp.port").(string)
+	server := viper.Get("app.smtp.server").(string)
+	to := viper.Get("app.smtp.receiver").(string)
+	subject := viper.Get("app.smtp.subject").(string)
 
 	msg := "From: " + from + "\n" +
 		"To: " + to + "\n" +
-		"Subject: Hello there\n\n" +
+		"Subject: " + subject + "\n\n" +
 		body
 
-	err := smtp.SendMail("smtp.gmail.com:587",
-		smtp.PlainAuth("", from, pass, "smtp.gmail.com"),
+	err := smtp.SendMail(server+":"+port,
+		smtp.PlainAuth("", from, pass, server),
 		from, []string{to}, []byte(msg))
 
 	if err != nil {
@@ -289,10 +293,18 @@ func main() {
 	done := make(chan struct{})
 	defer close(done)
 
+	// config
+	viper.SetConfigName("config")
+	viper.AddConfigPath(".")
+	err := viper.ReadInConfig()
+	if err != nil {
+		panic(fmt.Errorf("fatal error config file: %s", err))
+	}
+
 	// sample services
 	units := []string{"teamviewerd.service"}
 
-	ose := envServices
+	ose := viper.Get("app.monitored-service").(string)
 	if ose != "" {
 		units = []string{}
 		for _, s := range strings.Split(ose, ",") {
