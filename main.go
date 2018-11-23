@@ -41,8 +41,14 @@ func formatTime(us uint64) string {
 func (s serviceStatus) String() string {
 	var buf bytes.Buffer
 
+	hostname, err := os.Hostname()
+	if err != nil {
+		panic(err)
+	}
+
 	buf.WriteString(fmt.Sprintf("IP: %s\n", s.ID))
-	buf.WriteString(fmt.Sprintf("Name: %s\n", s.Name))
+	buf.WriteString(fmt.Sprintf("Hostname: %s\n", hostname))
+	buf.WriteString(fmt.Sprintf("Service Name: %s\n", s.Name))
 	buf.WriteString(fmt.Sprintf("State: %s\n", s.ActiveState))
 	//buf.WriteString(fmt.Sprintf("ActiveEnterTime: %s\n", formatTime(s.ActiveEnterTimestamp)))
 	//buf.WriteString(fmt.Sprintf("ActiveExitTime: %s\n", formatTime(s.ActiveExitTimestamp)))
@@ -261,8 +267,8 @@ func watchServices(chanDone chan struct{}, units ...string) {
 
 func sendEmail(body string) {
 	from := "*****@gmail.com"
-	pass := "***"
-	to := "******"
+	pass := "*****"
+	to := "*******"
 
 	msg := "From: " + from + "\n" +
 		"To: " + to + "\n" +
