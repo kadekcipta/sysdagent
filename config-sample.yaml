@@ -1,0 +1,12 @@
+---
+  app:
+      name: Monitoring Service
+      monitored-service: "<services splitted by comma>"
+      smtp:
+        user: "<sender>@<domain>"
+        password: "<password>"
+        port: "<port>"
+        server: "<smtp server>"
+        receiver: "<receiver>"
+        subject: "Service Status"
+---
