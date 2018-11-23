@@ -9,4 +9,9 @@
         server: "<smtp server>"
         recipient: "<receiver1>, <receiver2> "
         subject: "Service Status"
+        ses:
+          enabled: true
+          aws-key-id: "<your aws key ID>"
+          aws-secret-key: "your secret key"
+          aws-region: "<your region>"
 ---

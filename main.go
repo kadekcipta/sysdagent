@@ -14,6 +14,8 @@ import (
 
 	"github.com/godbus/dbus"
 	"github.com/spf13/viper"
+
+	"github.com/srajelli/ses-go"
 )
 
 const (
@@ -257,7 +259,18 @@ func watchServices(chanDone chan struct{}, units ...string) {
 			ioutil.WriteFile("filename.txt", []byte(status.ActiveState), 0644)
 			if status.ActiveState != string(contents) {
 				fmt.Println(status.String())
-				sendEmail(status.String())
+				if viper.GetBool("app.smtp.ses.enabled") == true {
+					//sesAws(status.String())
+					to := viper.Get("app.smtp.recipient").(string)
+					dest := strings.Split(to, ", ")
+					start := 0
+					for i := 0; i < len(dest); i++ {
+						start += i
+						sesAws(dest[start], status.String())
+					}
+				} else {
+					sendEmail(status.String())
+				}
 			}
 		case <-chanDone:
 			return
@@ -286,6 +299,28 @@ func sendEmail(body string) {
 		fmt.Printf("smtp error: %s", err)
 		return
 	}
+}
+
+func sesAws(to string, body string) {
+	from := viper.Get("app.smtp.user").(string)
+	subject := viper.Get("app.smtp.subject").(string)
+	awsKeyID := viper.Get("app.smtp.ses.aws-key-id").(string)
+	awsSecretKey := viper.Get("app.smtp.ses.aws-secret-key").(string)
+	awsRegion := viper.Get("app.smtp.ses.aws-region").(string)
+
+	ses.SetConfiguration(awsKeyID, awsSecretKey, awsRegion)
+
+	emailData := ses.Email{
+		To:      to,
+		From:    from,
+		Text:    body,
+		Subject: subject,
+		ReplyTo: from,
+	}
+
+	resp := ses.SendEmail(emailData)
+
+	fmt.Println(resp)
 }
 
 func main() {

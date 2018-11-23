@@ -26,3 +26,4 @@ _testmain.go
 *.zip
 sysdagent
 config.yaml
+filename.txt
